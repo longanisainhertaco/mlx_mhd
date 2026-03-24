@@ -220,14 +220,14 @@ def test_validation_low_beta_rankine_hugoniot():
 
     state = mhd.primitive_to_conserved(prim)
     vol = grid.cell_volumes
-    pz_half = float(np.sum(np.abs(state[C["rho_vz"]]) * vol))
+    pz_initial_mag = float(np.sum(np.abs(state[C["rho_vz"]]) * vol))
 
     for _ in range(20):
         dt = solver.courant_timestep(state)
         state, _ = solver.step(state, dt)
 
     pz_total = float(np.sum(state[C["rho_vz"]] * vol))
-    momentum_asymmetry = abs(pz_total) / max(pz_half, 1e-30)
+    momentum_asymmetry = abs(pz_total) / max(pz_initial_mag, 1e-30)
     assert momentum_asymmetry < 0.05, (
         f"R-H momentum asymmetry {momentum_asymmetry:.3f}, expected < 0.05"
     )
