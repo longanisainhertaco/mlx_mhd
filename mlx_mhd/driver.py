@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .solver import PF1000_CIRCUIT, PF1000RunResult, SolverConfig, run_pf1000_simulation
+from .solver import (
+    PF1000_CIRCUIT,
+    PF1000RunResult,
+    SolverConfig,
+    run_pf1000_simulation,
+    validate_pf1000,
+)
 
 
 def run_pf1000(
@@ -40,4 +46,17 @@ def plot_pf1000(result: PF1000RunResult, *, output_path: Optional[str] = None) -
     else:
         fig.savefig(output_path, dpi=150)
     plt.close(fig)
+
+
+def print_validation_report(result: PF1000RunResult) -> None:
+    """Print a human-readable validation report for all 8 targets."""
+    report = validate_pf1000(result)
+    print("PF-1000 Validation Report")
+    print("=" * 60)
+    for name, (value, passes) in report.items():
+        status = "PASS" if passes else "FAIL"
+        print(f"  [{status}] {name}: {value:.4g}")
+    n_pass = sum(1 for _, p in report.values() if p)
+    print("-" * 60)
+    print(f"  {n_pass}/{len(report)} targets within reference range")
 
