@@ -761,13 +761,15 @@ def recommended_thread_group(nr: int, nz: int) -> Tuple[int, int, int]:
     ----------
     nr, nz : int
         Problem dimensions along radial and axial directions. The values are
-        used to clamp the suggested sizes so they never exceed the grid.
+        used to clamp the suggested radial/axial sizes so they never exceed
+        the grid.
 
     Returns
     -------
-    (tg_r, tg_z, tg_comp) : tuple[int, int, int]
+        (tg_r, tg_z, tg_comp) : tuple[int, int, int]
         Threadgroup extents for radial, axial, and component dimensions. The
-        third entry is useful for the ghost-padding kernel's 3-D grid.
+        third entry is fixed at 4 for the ghost-padding kernel's 3-D grid,
+        while the first two entries are clamped to the provided sizes.
     """
     # Favor ~256 threads per group while keeping 3D occupancy reasonable.
     tg_r = 16 if nr >= 16 else max(1, nr)
