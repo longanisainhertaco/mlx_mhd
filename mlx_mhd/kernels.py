@@ -483,6 +483,7 @@ def ghost_pad(
     out = mx.empty((10, nr + 2 * ng, nz), dtype=state.dtype, device=state.device)
     kernel = build_ghost_padding_kernel()
     grid = (nr + 2 * ng, nz, 10)
+    # mx.fast.metal_kernel expects inputs as a list and the output as a separate argument.
     kernel([state], out, constants=[nr, nz, ng, dr, r_min, float(current_I)], grid=grid)
     return out
 
@@ -677,6 +678,12 @@ def ghost_pad_numpy(
     assert comps == 10
     r_min = dr * 0.5 if r_min is None else r_min
     out = np.zeros((10, nr + 2 * ng, nz), dtype=np.float32)
+
+    def clamp_r(r_in: int) -> int:
+        if r_in >= 0:
+            return min(max(r_in, 0), nr - 1)
+        return min(-r_in - 1, nr - 1)
+
     for r_out in range(nr + 2 * ng):
         r_in = r_out - ng
         for z in range(nz):
@@ -684,7 +691,7 @@ def ghost_pad_numpy(
                 if 0 <= r_in < nr:
                     val = state[c, r_in, z]
                 elif r_in < 0:
-                    src_r = min(-r_in - 1, nr - 1)
+                    src_r = clamp_r(r_in)
                     src = state[c, src_r, z]
                     if c in (COMPONENTS["vr"], COMPONENTS["Br"], COMPONENTS["Btheta"]):
                         val = 0.0
@@ -705,10 +712,10 @@ def ghost_pad_numpy(
                 # axial
                 if z == 0 and c in (COMPONENTS["vz"], COMPONENTS["Bz"]):
                     mirror_z = 1 if nz > 1 else 0
-                    src_r = min(max(r_in, 0), nr - 1) if r_in >= 0 else min(-r_in - 1, nr - 1)
+                    src_r = clamp_r(r_in)
                     val = -state[c, src_r, mirror_z]
                 elif z == nz - 1:
-                    src_r = min(max(r_in, 0), nr - 1) if r_in >= 0 else min(-r_in - 1, nr - 1)
+                    src_r = clamp_r(r_in)
                     val = state[c, src_r, nz - 1]
 
                 out[c, r_out, z] = val
@@ -769,7 +776,9 @@ def recommended_thread_group(nr: int, nz: int) -> Tuple[int, int, int]:
         (tg_r, tg_z, tg_comp) : tuple[int, int, int]
         Threadgroup extents for radial, axial, and component dimensions. The
         third entry is fixed at 4 for the ghost-padding kernel's 3-D grid,
-        while the first two entries are clamped to the provided sizes.
+        while the first two entries are clamped to the provided sizes. For
+        2-D kernels (HLLD flux or geometric sources) use only ``tg_r`` and
+        ``tg_z``.
     """
     # Favor ~256 threads per group while keeping 3D occupancy reasonable.
     tg_r = 16 if nr >= 16 else max(1, nr)

@@ -33,6 +33,7 @@ Reference CPU versions are available as `ghost_pad_numpy`, `hlld_flux_numpy`, an
 ## Threadgroup sizing (M3 Pro, 14 GPU cores)
 For best occupancy, launch around 256 threads per group:
 - Ghost padding: `(tg_r, tg_z, tg_comp) = (16, 8, 4)` with grid `(nr+2*ng, nz, 10)`
-- HLLD flux and geometric sources: `(16, 8)` works well for `(nr, nz)` grids
+- HLLD flux and geometric sources: `(16, 8)` works well for `(nr, nz)` grids (ignore the third entry)
 
-You can retrieve the suggested padding size via `recommended_thread_group(nr, nz)`.
+You can retrieve the suggested sizes via `recommended_thread_group(nr, nz)`; for
+2-D kernels, use only the first two entries of the returned tuple.
