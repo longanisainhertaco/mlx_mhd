@@ -438,6 +438,9 @@ def _ensure_mx_float32(arr: "mx.array") -> "mx.array":
 def build_ghost_padding_kernel():
     """Return compiled ghost padding Metal kernel.
 
+    The kernel mirrors inner radial cells, applies reflecting/outflow axial
+    boundaries, and sets electrode-driven Btheta on the outer boundary.
+
     Returns
     -------
     Callable
@@ -450,6 +453,9 @@ def build_ghost_padding_kernel():
 def build_hlld_kernel():
     """Return compiled HLLD Metal kernel.
 
+    The kernel computes MHD interface fluxes using the HLLD Riemann solver,
+    including the passive entropy tracer.
+
     Returns
     -------
     Callable
@@ -461,6 +467,9 @@ def build_hlld_kernel():
 
 def build_geometric_source_kernel():
     """Return compiled geometric source Metal kernel.
+
+    The kernel evaluates cylindrical-coordinate geometric source terms for
+    the MHD equations.
 
     Returns
     -------
@@ -492,6 +501,11 @@ def ghost_pad(
         Radius of first cell center. Defaults to dr / 2.
     ng : int
         Number of radial ghost cells.
+
+    Returns
+    -------
+    mx.array
+        Padded state shaped (10, nr + 2 * ng, nz).
     """
 
     _require_mx()
@@ -704,7 +718,27 @@ def hlld_flux(
 def ghost_pad_numpy(
     state: np.ndarray, current_I: float, dr: float, r_min: Optional[float] = None, ng: int = 3
 ) -> np.ndarray:
-    """NumPy reference for radial ghost padding."""
+    """NumPy reference for radial ghost padding.
+
+    Parameters
+    ----------
+    state : np.ndarray
+        Primitive state shaped (10, nr, nz).
+    current_I : float
+        Electrode current in Amps for setting Btheta on the outer boundary.
+    dr : float
+        Radial spacing.
+    r_min : float, optional
+        First cell-center radius; defaults to dr/2.
+    ng : int
+        Number of radial ghost cells.
+
+    Returns
+    -------
+    np.ndarray
+        Padded state with shape (10, nr + 2 * ng, nz) after applying boundary
+        conditions.
+    """
     comps, nr, nz = state.shape
     assert comps == 10
     r_min = dr * 0.5 if r_min is None else r_min
@@ -754,7 +788,20 @@ def ghost_pad_numpy(
 
 
 def cylindrical_sources_numpy(prim: np.ndarray, radii: np.ndarray) -> np.ndarray:
-    """Reference geometric source term."""
+    """Reference geometric source term.
+
+    Parameters
+    ----------
+    prim : np.ndarray
+        Primitive variables shaped (10, nr, nz) in :data:`COMPONENTS` order.
+    radii : np.ndarray
+        Radial cell-center coordinates (nr,).
+
+    Returns
+    -------
+    np.ndarray
+        Source terms with the same shape as ``prim``.
+    """
     comps, nr, nz = prim.shape
     out = np.zeros_like(prim, dtype=np.float32)
     eps = 1e-6
