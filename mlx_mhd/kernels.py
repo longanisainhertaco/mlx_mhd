@@ -732,12 +732,22 @@ def hlld_flux_numpy(
 
     assert left.shape == right.shape
     comps, nr, nz = left.shape
+
+    # _hlld_flux_single is written for direction=0 (radial).  For direction=1
+    # (axial) we swap momentum (1<->2) and B-field (6<->7) indices so the
+    # single-interface solver sees the axial component as the "normal"
+    # direction, then swap the result back.
+    swap = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    if direction == 1:
+        swap = [0, 2, 1, 3, 4, 5, 7, 6, 8, 9]
+
     out = np.zeros((10, nr, nz), dtype=np.float32)
     for i in range(nr):
         for k in range(nz):
-            out[:, i, k] = _hlld_flux_single(
-                left[:, i, k].astype(np.float32), right[:, i, k].astype(np.float32)
-            )
+            ul = left[swap, i, k].astype(np.float32)
+            ur = right[swap, i, k].astype(np.float32)
+            f = _hlld_flux_single(ul, ur)
+            out[swap, i, k] = f
     return out
 
 
@@ -761,19 +771,26 @@ def hlld_flux(
     if _validated_hlld_flux is not None:
         return _validated_hlld_flux(left, right, direction=direction)
 
-    if direction != 0:
-        raise NotImplementedError(
-            "The fallback package HLLD kernel only supports direction=0; "
-            "the validated top-level kernel supports both directions."
-        )
-
     _require_mx()
     left = _ensure_mx_float32(left)
     right = _ensure_mx_float32(right)
+
+    # The embedded Metal kernel is written for direction=0 (radial).
+    # For direction=1 (axial) we swap momentum (1<->2) and B-field (6<->7)
+    # indices before and after the kernel call.
+    if direction == 1:
+        swap = [0, 2, 1, 3, 4, 5, 7, 6, 8, 9]
+        left = left[swap]
+        right = right[swap]
+
     nr, nz = int(left.shape[1]), int(left.shape[2])
     out = mx.empty((10, nr, nz), dtype=mx.float32, device=left.device)
     kernel = build_hlld_kernel()
     kernel([left, right], out, constants=[nr, nz], grid=(nr, nz))
+
+    if direction == 1:
+        out = out[swap]
+
     return out
 
 
