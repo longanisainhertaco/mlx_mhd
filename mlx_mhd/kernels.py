@@ -13,22 +13,55 @@ try:
 except ImportError:  # pragma: no cover - MLX is only available on Apple Silicon
     mx = None
 
+try:  # pragma: no cover - these modules live at repository top level in source checkouts
+    from mhd_reference import (
+        ghost_pad_np as _reference_ghost_pad_numpy,
+        hlld_flux_np as _reference_hlld_flux_numpy,
+        cyl_source_np as _reference_cylindrical_sources_numpy,
+    )
+except ImportError:  # pragma: no cover
+    _reference_ghost_pad_numpy = None
+    _reference_hlld_flux_numpy = None
+    _reference_cylindrical_sources_numpy = None
+
+try:  # pragma: no cover - MLX-backed kernels are optional in non-Apple environments
+    from mhd_kernels import (
+        ghost_pad as _validated_ghost_pad,
+        hlld_flux as _validated_hlld_flux,
+        cyl_source as _validated_cylindrical_sources,
+    )
+except ImportError:  # pragma: no cover
+    _validated_ghost_pad = None
+    _validated_hlld_flux = None
+    _validated_cylindrical_sources = None
+
 # Physical constants
 MU0: float = 4.0 * np.pi * 1e-7
 GAMMA: float = 5.0 / 3.0
 
-# Component ordering (structure-of-arrays)
+# Component ordering (structure-of-arrays).
+#
+# Canonical names follow the conserved-state layout used by the validated
+# top-level kernels:
+#   [rho, rho_vr, rho_vz, rho_vtheta, E, Srho, Br, Bz, Btheta, Ee]
+#
+# Legacy primitive-style aliases are retained for compatibility with the
+# cylindrical source helpers, which operate on primitive variables.
 COMPONENTS: Dict[str, int] = {
     "rho": 0,
-    "vr": 1,
-    "vz": 2,
-    "vtheta": 3,
-    "p": 4,
+    "rho_vr": 1,
+    "rho_vz": 2,
+    "rho_vtheta": 3,
+    "E": 4,
     "Srho": 5,
     "Br": 6,
     "Bz": 7,
     "Btheta": 8,
     "Ee": 9,
+    "vr": 1,
+    "vz": 2,
+    "vtheta": 3,
+    "p": 4,
 }
 
 # ---------------------------------------------------------------------------
@@ -480,6 +513,14 @@ def build_geometric_source_kernel():
     return mx.fast.metal_kernel(GEOMETRIC_SOURCES_MSL, "geometric_sources")
 
 
+def _infer_dr(radii: np.ndarray) -> float:
+    """Infer radial spacing from cell-center radii."""
+    radii = np.asarray(radii, dtype=np.float32)
+    if radii.ndim != 1 or radii.size < 2:
+        raise ValueError("at least two radii are required to infer dr")
+    return float(radii[1] - radii[0])
+
+
 def ghost_pad(
     state: "mx.array",
     current_I: float,
@@ -492,7 +533,9 @@ def ghost_pad(
     Parameters
     ----------
     state : mx.array
-        Primitive state array with shape (10, nr, nz).
+        Conserved state array with shape ``(10, nr, nz)`` and canonical
+        component ordering ``[rho, rho_vr, rho_vz, rho_vtheta, E, Srho, Br,
+        Bz, Btheta, Ee]``.
     current_I : float
         Electrode current in Amps.
     dr : float
@@ -507,6 +550,9 @@ def ghost_pad(
     mx.array
         Padded state shaped (10, nr + 2 * ng, nz).
     """
+
+    if _validated_ghost_pad is not None:
+        return _validated_ghost_pad(state, I=current_I, dr=dr, ng=ng)
 
     _require_mx()
     state = _ensure_mx_float32(state)
@@ -669,15 +715,20 @@ def _hlld_flux_single(
 
 
 def hlld_flux_numpy(
-    left: np.ndarray, right: np.ndarray
+    left: np.ndarray, right: np.ndarray, direction: int = 0
 ) -> np.ndarray:
     """Vectorized NumPy reference for the HLLD flux.
 
     Parameters
     ----------
     left, right : np.ndarray
-        Arrays shaped (10, nr, nz) with primitive variables.
+        Conserved left/right interface states shaped ``(10, nr, nz)``.
+    direction : int, default 0
+        Flux direction, ``0`` for radial and ``1`` for axial.
     """
+
+    if _reference_hlld_flux_numpy is not None:
+        return _reference_hlld_flux_numpy(left, right, direction=direction)
 
     assert left.shape == right.shape
     comps, nr, nz = left.shape
@@ -691,21 +742,31 @@ def hlld_flux_numpy(
 
 
 def hlld_flux(
-    left: "mx.array", right: "mx.array"
+    left: "mx.array", right: "mx.array", direction: int = 0
 ) -> "mx.array":
     """Compute fluxes using the Metal HLLD kernel.
 
     Parameters
     ----------
     left, right : mx.array
-        Primitive left/right interface states shaped (10, nr, nz) with the
-        component ordering specified in :data:`COMPONENTS`.
+        Conserved left/right interface states shaped ``(10, nr, nz)``.
+    direction : int, default 0
+        Flux direction, ``0`` for radial and ``1`` for axial.
 
     Returns
     -------
     mx.array
         Flux array with shape (10, nr, nz).
     """
+    if _validated_hlld_flux is not None:
+        return _validated_hlld_flux(left, right, direction=direction)
+
+    if direction != 0:
+        raise NotImplementedError(
+            "The fallback package HLLD kernel only supports direction=0; "
+            "the validated top-level kernel supports both directions."
+        )
+
     _require_mx()
     left = _ensure_mx_float32(left)
     right = _ensure_mx_float32(right)
@@ -740,6 +801,11 @@ def ghost_pad_numpy(
         Padded state with shape (10, nr + 2 * ng, nz) after applying boundary
         conditions.
     """
+    if _reference_ghost_pad_numpy is not None and (
+        r_min is None or np.isclose(r_min, 0.5 * dr)
+    ):
+        return _reference_ghost_pad_numpy(state, current_I, dr, ng)
+
     comps, nr, nz = state.shape
     assert comps == 10
     r_min = dr * 0.5 if r_min is None else r_min
@@ -788,7 +854,9 @@ def ghost_pad_numpy(
     return out
 
 
-def cylindrical_sources_numpy(prim: np.ndarray, radii: np.ndarray) -> np.ndarray:
+def cylindrical_sources_numpy(
+    prim: np.ndarray, radii: np.ndarray, dr: Optional[float] = None
+) -> np.ndarray:
     """Reference geometric source term.
 
     Parameters
@@ -797,12 +865,19 @@ def cylindrical_sources_numpy(prim: np.ndarray, radii: np.ndarray) -> np.ndarray
         Primitive variables shaped (10, nr, nz) in :data:`COMPONENTS` order.
     radii : np.ndarray
         Radial cell-center coordinates (nr,).
+    dr : float, optional
+        Radial spacing. When omitted, it is inferred from ``radii``.
 
     Returns
     -------
     np.ndarray
         Source terms with the same shape as ``prim``.
     """
+    if _reference_cylindrical_sources_numpy is not None:
+        if dr is None:
+            dr = _infer_dr(radii)
+        return _reference_cylindrical_sources_numpy(prim, radii, dr)
+
     comps, nr, nz = prim.shape
     out = np.zeros_like(prim, dtype=np.float32)
     eps = 1e-6
@@ -827,7 +902,7 @@ def cylindrical_sources_numpy(prim: np.ndarray, radii: np.ndarray) -> np.ndarray
 
 
 def cylindrical_sources(
-    prim: "mx.array", radii: "mx.array"
+    prim: "mx.array", radii: "mx.array", dr: Optional[float] = None
 ) -> "mx.array":
     """Compute cylindrical geometric source terms.
 
@@ -837,12 +912,21 @@ def cylindrical_sources(
         Primitive variables shaped (10, nr, nz) in :data:`COMPONENTS` order.
     radii : mx.array
         Radial cell-center coordinates (nr,) in meters.
+    dr : float, optional
+        Radial spacing. When omitted, it is inferred from ``radii``.
 
     Returns
     -------
     mx.array
         Source term array with the same shape as ``prim``.
     """
+    if dr is None:
+        dr = _infer_dr(np.asarray(radii))
+
+    if _validated_cylindrical_sources is not None:
+        radii = _ensure_mx_float32(radii)
+        return _validated_cylindrical_sources(prim, radii, dr)
+
     _require_mx()
     prim = _ensure_mx_float32(prim)
     radii = _ensure_mx_float32(radii)
