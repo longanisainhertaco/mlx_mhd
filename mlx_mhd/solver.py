@@ -38,6 +38,7 @@ EE = COMPONENTS["Ee"]
 
 K_B = 1.380649e-23
 M_DEUTERIUM = 3.343583719e-27
+EV_TO_JOULES = 1.602176634e-19
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,11 @@ class SolverConfig:
     entropy_sync_compression: float = 0.33
     entropy_sync_pressure_jump: float = 0.33
     entropy_sync_eta: float = 0.01
+    use_spitzer_resistivity: bool = False
+    spitzer_Z: float = 1.0
+    spitzer_lnA: float = 10.0
+    spitzer_eta_floor: float = 1e-8
+    spitzer_eta_cap: float = 1e-2
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,44 @@ PF1000_CIRCUIT = CircuitParameters(
 )
 
 
+@dataclass(frozen=True)
+class ValidationTarget:
+    """A single validation metric with its acceptable reference range."""
+
+    label: str
+    unit: str
+    reference_low: float
+    reference_high: float
+
+
+PF1000_VALIDATION_TARGETS: dict[str, "ValidationTarget"] = {
+    "peak_current": ValidationTarget(
+        "Peak discharge current", "A", 1.0e6, 2.5e6,
+    ),
+    "time_of_peak_current": ValidationTarget(
+        "Time to peak current", "s", 4.0e-6, 8.0e-6,
+    ),
+    "current_dip_fraction": ValidationTarget(
+        "Current dip at pinch", "", 0.02, 0.30,
+    ),
+    "pinch_time": ValidationTarget(
+        "Pinch time", "s", 4.0e-6, 10.0e-6,
+    ),
+    "peak_dI_dt": ValidationTarget(
+        "Peak |dI/dt|", "A/s", 1.0e11, 1.0e13,
+    ),
+    "inductance_at_pinch": ValidationTarget(
+        "Inductance at pinch", "H", 10.0e-9, 60.0e-9,
+    ),
+    "mean_sheath_speed": ValidationTarget(
+        "Mean axial sheath speed", "m/s", 2.0e4, 3.0e5,
+    ),
+    "radiated_energy_fraction": ValidationTarget(
+        "Radiated energy fraction", "", 0.0, 0.30,
+    ),
+}
+
+
 @dataclass
 class PF1000RunResult:
     """Data returned by :func:`run_pf1000_simulation`."""
@@ -156,10 +200,61 @@ class PF1000RunResult:
     voltages: np.ndarray
     inductances: np.ndarray
     state: np.ndarray
+    dI_dt: np.ndarray
+    sheath_positions: np.ndarray
+    radiated_energy: np.ndarray
+    stored_energy: float = 0.0
 
     @property
     def peak_current(self) -> float:
-        return float(np.max(self.currents))
+        """Maximum absolute discharge current in amperes."""
+        return float(np.max(np.abs(self.currents)))
+
+    @property
+    def time_of_peak_current(self) -> float:
+        return float(self.times[int(np.argmax(np.abs(self.currents)))])
+
+    @property
+    def pinch_time(self) -> float:
+        """Time of maximum |dI/dt|, indicating the pinch phase."""
+        return float(self.times[int(np.argmax(np.abs(self.dI_dt)))])
+
+    @property
+    def current_dip_fraction(self) -> float:
+        """Fractional current dip after peak, indicating energy transfer to the pinch."""
+        idx_peak = int(np.argmax(np.abs(self.currents)))
+        i_peak = np.abs(self.currents[idx_peak])
+        if idx_peak >= len(self.currents) - 1 or i_peak < 1e-6:
+            return 0.0
+        i_after = np.min(np.abs(self.currents[idx_peak:]))
+        return float((i_peak - i_after) / i_peak)
+
+    @property
+    def peak_dI_dt(self) -> float:
+        return float(np.max(np.abs(self.dI_dt)))
+
+    @property
+    def inductance_at_pinch(self) -> float:
+        idx = int(np.argmax(np.abs(self.dI_dt)))
+        return float(self.inductances[idx])
+
+    @property
+    def mean_sheath_speed(self) -> float:
+        """Average axial sheath velocity from position trace."""
+        if len(self.sheath_positions) < 2:
+            return 0.0
+        dz = np.abs(np.diff(self.sheath_positions))
+        dt = np.diff(self.times)
+        valid = dt > 0.0
+        if not np.any(valid):
+            return 0.0
+        return float(np.mean(dz[valid] / dt[valid]))
+
+    @property
+    def radiated_energy_fraction(self) -> float:
+        if self.stored_energy <= 0.0:
+            return 0.0
+        return float(self.radiated_energy[-1] / self.stored_energy)
 
 
 def _ensure_state_shape(state: np.ndarray) -> np.ndarray:
@@ -172,6 +267,67 @@ def _ensure_state_shape(state: np.ndarray) -> np.ndarray:
 def _smoothstep(x: np.ndarray) -> np.ndarray:
     y = np.clip(x, 0.0, 1.0)
     return y * y * (3.0 - 2.0 * y)
+
+
+def _electron_temperature_eV(
+    state: np.ndarray,
+    ne: np.ndarray,
+    config: SolverConfig,
+) -> np.ndarray:
+    """Compute electron temperature in eV from the conserved state and number density."""
+    return (
+        (2.0 / 3.0)
+        * np.maximum(state[EE].astype(np.float64), config.electron_energy_floor)
+        / np.maximum(ne * K_B, 1e-30)
+        * K_B / EV_TO_JOULES
+    )
+
+
+def spitzer_resistivity(
+    Te_eV: np.ndarray,
+    *,
+    Z: float = 1.0,
+    lnA: float = 10.0,
+    eta_floor: float = 1e-8,
+    eta_cap: float = 1e-2,
+) -> np.ndarray:
+    """Classical Spitzer resistivity in Ω·m.
+
+    Uses the simplified form ``η = 5.2×10⁻⁵ Z ln(Λ) / T_e^{3/2}`` where
+    ``T_e`` is the electron temperature in eV.
+    """
+    Te = np.maximum(np.asarray(Te_eV, dtype=np.float64), 0.1)
+    eta = 5.2e-5 * Z * lnA / Te**1.5
+    return np.clip(eta, eta_floor, eta_cap)
+
+
+def extract_sheath_position(state: np.ndarray, grid: "CylindricalGrid") -> float:
+    """Return the axial position of the density-weighted current sheath."""
+    state = _ensure_state_shape(state).astype(np.float64)
+    rho = np.maximum(state[RHO], 0.0)
+    r = grid.radii[:, None]
+    profile = np.sum(rho * r * grid.dr, axis=0)
+    return float(grid.axial[int(np.argmax(profile))])
+
+
+def _estimate_radiated_power(
+    state: np.ndarray,
+    grid: "CylindricalGrid",
+    config: SolverConfig,
+) -> float:
+    """Volume-integrated bremsstrahlung power in watts."""
+    if not config.bremsstrahlung:
+        return 0.0
+    state = _ensure_state_shape(state).astype(np.float64)
+    rho = np.maximum(state[RHO], config.density_floor)
+    ne = rho / M_DEUTERIUM
+    te = (
+        (2.0 / 3.0)
+        * np.maximum(state[EE], config.electron_energy_floor)
+        / np.maximum(ne * K_B, 1e-30)
+    )
+    q_brem = 1.42e-40 * ne**2 * np.sqrt(np.maximum(te, 0.0))
+    return float(np.sum(q_brem * grid.cell_volumes))
 
 
 def recover_pressure(
@@ -473,10 +629,21 @@ def compute_source_terms(
     primitive = conserved_to_primitive(state, config=config)
     src = cylindrical_sources_numpy(primitive, grid.radii.astype(np.float32), dr=grid.dr).astype(np.float64)
 
-    if config.resistivity > 0.0:
+    use_resistive = config.resistivity > 0.0 or config.use_spitzer_resistivity
+    if use_resistive:
         jr, jz, jth = compute_current_density(state, grid)
         j2 = jr.astype(np.float64) ** 2 + jz.astype(np.float64) ** 2 + jth.astype(np.float64) ** 2
-        q_heat = config.resistivity * j2
+        if config.use_spitzer_resistivity:
+            rho_sp = np.maximum(primitive[RHO].astype(np.float64), config.density_floor)
+            ne_sp = rho_sp / M_DEUTERIUM
+            Te_eV = _electron_temperature_eV(state, ne_sp, config)
+            eta_local = spitzer_resistivity(
+                Te_eV, Z=config.spitzer_Z, lnA=config.spitzer_lnA,
+                eta_floor=config.spitzer_eta_floor, eta_cap=config.spitzer_eta_cap,
+            )
+            q_heat = eta_local * j2
+        else:
+            q_heat = config.resistivity * j2
         pressure = np.maximum(primitive[ENERGY].astype(np.float64), config.pressure_floor)
         rho = np.maximum(primitive[RHO].astype(np.float64), config.density_floor)
         entropy = state[SRHO].astype(np.float64) / rho
@@ -618,11 +785,26 @@ def implicit_resistive_diffusion(
 ) -> np.ndarray:
     """Operator-split implicit diffusion for magnetic components."""
 
-    if not config.enable_resistive_diffusion or config.resistivity <= 0.0:
+    if not config.enable_resistive_diffusion:
         return _ensure_state_shape(state)
 
-    alpha_r = config.resistivity * dt / (grid.dr * grid.dr)
-    alpha_z = config.resistivity * dt / (grid.dz * grid.dz)
+    if config.use_spitzer_resistivity:
+        s = _ensure_state_shape(state).astype(np.float64)
+        rho = np.maximum(s[RHO], config.density_floor)
+        ne = rho / M_DEUTERIUM
+        Te_eV = _electron_temperature_eV(s, ne, config)
+        eta_mean = float(np.mean(spitzer_resistivity(
+            Te_eV, Z=config.spitzer_Z, lnA=config.spitzer_lnA,
+            eta_floor=config.spitzer_eta_floor, eta_cap=config.spitzer_eta_cap,
+        )))
+    else:
+        eta_mean = config.resistivity
+
+    if eta_mean <= 0.0:
+        return _ensure_state_shape(state)
+
+    alpha_r = eta_mean * dt / (grid.dr * grid.dr)
+    alpha_z = eta_mean * dt / (grid.dz * grid.dz)
     out = _ensure_state_shape(state).copy().astype(np.float64)
     for comp in (BR, BZ, BTH):
         tmp = _implicit_diffuse_axis(out[comp], alpha_z, axis=1)
@@ -834,10 +1016,13 @@ def run_pf1000_simulation(
     currents = np.empty(nsteps + 1, dtype=np.float64)
     voltages = np.empty(nsteps + 1, dtype=np.float64)
     inductances = np.empty(nsteps + 1, dtype=np.float64)
+    sheath_positions = np.empty(nsteps + 1, dtype=np.float64)
+    radiated_energy = np.zeros(nsteps + 1, dtype=np.float64)
     times[0] = circuit_state.time
     currents[0] = circuit_state.current
     voltages[0] = circuit_state.capacitor_voltage
     inductances[0] = circuit_state.plasma_inductance
+    sheath_positions[0] = extract_sheath_position(state, grid)
 
     for n in range(1, nsteps + 1):
         state, circuit_state = solver.step(state, dt, circuit_state)
@@ -846,5 +1031,52 @@ def run_pf1000_simulation(
         currents[n] = circuit_state.current
         voltages[n] = circuit_state.capacitor_voltage
         inductances[n] = circuit_state.plasma_inductance
+        sheath_positions[n] = extract_sheath_position(state, grid)
+        radiated_energy[n] = radiated_energy[n - 1] + _estimate_radiated_power(state, grid, config) * dt
 
-    return PF1000RunResult(times=times, currents=currents, voltages=voltages, inductances=inductances, state=state)
+    dI_dt = np.gradient(currents, times)
+    stored_energy = 0.5 * circuit.C * circuit.V0**2
+
+    return PF1000RunResult(
+        times=times,
+        currents=currents,
+        voltages=voltages,
+        inductances=inductances,
+        state=state,
+        dI_dt=dI_dt,
+        sheath_positions=sheath_positions,
+        radiated_energy=radiated_energy,
+        stored_energy=stored_energy,
+    )
+
+
+def validate_pf1000(
+    result: PF1000RunResult,
+    targets: Optional[dict[str, "ValidationTarget"]] = None,
+) -> dict[str, tuple[float, bool]]:
+    """Compare simulation results against all 8 PF-1000 validation targets.
+
+    Returns a mapping from target name to ``(measured_value, passes)`` where
+    *passes* is ``True`` when the measured value falls within the reference
+    range.
+    """
+    if targets is None:
+        targets = PF1000_VALIDATION_TARGETS
+
+    metrics: dict[str, float] = {
+        "peak_current": result.peak_current,
+        "time_of_peak_current": result.time_of_peak_current,
+        "current_dip_fraction": result.current_dip_fraction,
+        "pinch_time": result.pinch_time,
+        "peak_dI_dt": result.peak_dI_dt,
+        "inductance_at_pinch": result.inductance_at_pinch,
+        "mean_sheath_speed": result.mean_sheath_speed,
+        "radiated_energy_fraction": result.radiated_energy_fraction,
+    }
+
+    report: dict[str, tuple[float, bool]] = {}
+    for name, target in targets.items():
+        value = metrics.get(name, float("nan"))
+        passes = target.reference_low <= value <= target.reference_high
+        report[name] = (value, passes)
+    return report

@@ -120,3 +120,137 @@ def test_pf1000_driver_smoke_run_returns_reasonable_current_trace():
     assert result.times.shape == result.currents.shape
     assert np.all(np.isfinite(result.currents))
     assert result.peak_current >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Spitzer resistivity
+# ---------------------------------------------------------------------------
+
+
+def test_spitzer_resistivity_temperature_scaling():
+    """Spitzer eta must decrease as temperature increases (eta ~ T^-3/2)."""
+    Te_low = np.array([1.0])  # 1 eV
+    Te_high = np.array([100.0])  # 100 eV
+    eta_low = mhd.spitzer_resistivity(Te_low)
+    eta_high = mhd.spitzer_resistivity(Te_high)
+    assert eta_low[0] > eta_high[0]
+    # Exact ratio is (100/1)^1.5 = 1000; tolerance accounts for the
+    # floor clamp at Te=0.1 eV having no effect on these inputs.
+    ratio = eta_low[0] / eta_high[0]
+    assert 900.0 < ratio < 1100.0
+
+
+def test_spitzer_resistivity_clipping():
+    """Very cold and very hot plasmas must be clipped to floor/cap."""
+    Te_cold = np.array([1e-6])  # extremely cold
+    Te_hot = np.array([1e12])  # extremely hot
+    eta_cold = mhd.spitzer_resistivity(Te_cold, eta_floor=1e-8, eta_cap=1e-2)
+    eta_hot = mhd.spitzer_resistivity(Te_hot, eta_floor=1e-8, eta_cap=1e-2)
+    assert eta_cold[0] == 1e-2  # capped
+    assert eta_hot[0] == 1e-8  # floored
+
+
+# ---------------------------------------------------------------------------
+# Sheath tracking
+# ---------------------------------------------------------------------------
+
+
+def test_extract_sheath_position_returns_finite_value():
+    grid = _grid()
+    state = mhd.initialize_pf1000_state(grid)
+    z_sh = mhd.extract_sheath_position(state, grid)
+    assert np.isfinite(z_sh)
+    assert grid.axial[0] <= z_sh <= grid.axial[-1]
+
+
+# ---------------------------------------------------------------------------
+# PF1000RunResult diagnostic properties
+# ---------------------------------------------------------------------------
+
+
+def test_pf1000_result_exposes_all_eight_metrics():
+    """Smoke-test: result object must expose all 8 named metric properties."""
+    result = mhd.run_pf1000(total_time=2e-7, dt=5e-8, nr=12, nz=24)
+    metric_names = [
+        "peak_current",
+        "time_of_peak_current",
+        "current_dip_fraction",
+        "pinch_time",
+        "peak_dI_dt",
+        "inductance_at_pinch",
+        "mean_sheath_speed",
+        "radiated_energy_fraction",
+    ]
+    for name in metric_names:
+        value = getattr(result, name)
+        assert np.isfinite(value), f"{name} is not finite: {value}"
+
+
+def test_pf1000_result_has_diagnostic_arrays():
+    """The result must include dI/dt, sheath_positions, radiated_energy arrays."""
+    result = mhd.run_pf1000(total_time=2e-7, dt=5e-8, nr=12, nz=24)
+    assert result.dI_dt.shape == result.times.shape
+    assert result.sheath_positions.shape == result.times.shape
+    assert result.radiated_energy.shape == result.times.shape
+    assert np.all(np.isfinite(result.dI_dt))
+    assert np.all(np.isfinite(result.sheath_positions))
+    assert np.all(np.isfinite(result.radiated_energy))
+    assert result.stored_energy > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Validation framework
+# ---------------------------------------------------------------------------
+
+
+def test_validation_targets_cover_all_eight():
+    """PF1000_VALIDATION_TARGETS must define exactly 8 targets."""
+    targets = mhd.PF1000_VALIDATION_TARGETS
+    assert len(targets) == 8
+    expected_keys = {
+        "peak_current",
+        "time_of_peak_current",
+        "current_dip_fraction",
+        "pinch_time",
+        "peak_dI_dt",
+        "inductance_at_pinch",
+        "mean_sheath_speed",
+        "radiated_energy_fraction",
+    }
+    assert set(targets.keys()) == expected_keys
+    for t in targets.values():
+        assert isinstance(t, mhd.ValidationTarget)
+        assert t.reference_low <= t.reference_high
+
+
+def test_validate_pf1000_returns_report_for_all_targets():
+    """validate_pf1000 must return a dict with all 8 target names and (value, bool) entries."""
+    result = mhd.run_pf1000(total_time=2e-7, dt=5e-8, nr=12, nz=24)
+    report = mhd.validate_pf1000(result)
+    assert len(report) == 8
+    for name, (value, passes) in report.items():
+        assert name in mhd.PF1000_VALIDATION_TARGETS
+        assert isinstance(value, float)
+        assert isinstance(passes, (bool, np.bool_))
+
+
+# ---------------------------------------------------------------------------
+# Spitzer resistivity integration
+# ---------------------------------------------------------------------------
+
+
+def test_solver_step_with_spitzer_resistivity_stays_finite():
+    """A single solver step with Spitzer η must produce a finite, positive-pressure state."""
+    grid = _grid()
+    cfg = mhd.SolverConfig(use_spitzer_resistivity=True)
+    solver = mhd.MHDSolver(grid, config=cfg)
+    prim = mhd.make_uniform_primitive(
+        grid, rho=1.0, pressure=1e-4, bz=5.0,
+        btheta=0.5 / grid.radii[:, None],
+    )
+    state = mhd.primitive_to_conserved(prim)
+    dt = min(1e-8, solver.courant_timestep(state))
+    new_state, _ = solver.step(state, dt)
+    pressure = mhd.recover_pressure(new_state)
+    assert np.all(np.isfinite(new_state))
+    assert np.min(pressure) > 0.0

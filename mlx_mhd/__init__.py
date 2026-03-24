@@ -15,15 +15,17 @@ from .kernels import (
     build_geometric_source_kernel,
     recommended_thread_group,
 )
-from .driver import plot_pf1000, run_pf1000
+from .driver import plot_pf1000, print_validation_report, run_pf1000
 from .solver import (
     PF1000_CIRCUIT,
+    PF1000_VALIDATION_TARGETS,
     CircuitParameters,
     CircuitState,
     CylindricalGrid,
     MHDSolver,
     PF1000RunResult,
     SolverConfig,
+    ValidationTarget,
     compute_back_emf,
     compute_flux_divergence,
     compute_source_terms,
@@ -34,6 +36,7 @@ from .solver import (
     entropy_resynchronize,
     estimate_timestep,
     extract_plasma_inductance,
+    extract_sheath_position,
     implicit_resistive_diffusion,
     initialize_pf1000_state,
     make_uniform_primitive,
@@ -42,8 +45,10 @@ from .solver import (
     reconstruct_interfaces,
     run_pf1000_simulation,
     sound_speed,
+    spitzer_resistivity,
     step_circuit,
     thomas_solve,
+    validate_pf1000,
     weno5z_left,
 )
 
@@ -67,6 +72,8 @@ __all__ = [
     "CircuitState",
     "PF1000RunResult",
     "PF1000_CIRCUIT",
+    "ValidationTarget",
+    "PF1000_VALIDATION_TARGETS",
     "recover_pressure",
     "primitive_to_conserved",
     "conserved_to_primitive",
@@ -83,12 +90,16 @@ __all__ = [
     "thomas_solve",
     "implicit_resistive_diffusion",
     "extract_plasma_inductance",
+    "extract_sheath_position",
     "compute_back_emf",
     "step_circuit",
+    "spitzer_resistivity",
     "MHDSolver",
     "make_uniform_primitive",
     "initialize_pf1000_state",
     "run_pf1000_simulation",
+    "validate_pf1000",
     "run_pf1000",
     "plot_pf1000",
+    "print_validation_report",
 ]
