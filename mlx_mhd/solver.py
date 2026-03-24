@@ -38,6 +38,7 @@ EE = COMPONENTS["Ee"]
 
 K_B = 1.380649e-23
 M_DEUTERIUM = 3.343583719e-27
+EV_TO_JOULES = 1.602176634e-19
 
 
 @dataclass(frozen=True)
@@ -206,6 +207,7 @@ class PF1000RunResult:
 
     @property
     def peak_current(self) -> float:
+        """Maximum absolute discharge current in amperes."""
         return float(np.max(np.abs(self.currents)))
 
     @property
@@ -265,6 +267,20 @@ def _ensure_state_shape(state: np.ndarray) -> np.ndarray:
 def _smoothstep(x: np.ndarray) -> np.ndarray:
     y = np.clip(x, 0.0, 1.0)
     return y * y * (3.0 - 2.0 * y)
+
+
+def _electron_temperature_eV(
+    state: np.ndarray,
+    ne: np.ndarray,
+    config: SolverConfig,
+) -> np.ndarray:
+    """Compute electron temperature in eV from the conserved state and number density."""
+    return (
+        (2.0 / 3.0)
+        * np.maximum(state[EE].astype(np.float64), config.electron_energy_floor)
+        / np.maximum(ne * K_B, 1e-30)
+        * K_B / EV_TO_JOULES
+    )
 
 
 def spitzer_resistivity(
@@ -620,12 +636,7 @@ def compute_source_terms(
         if config.use_spitzer_resistivity:
             rho_sp = np.maximum(primitive[RHO].astype(np.float64), config.density_floor)
             ne_sp = rho_sp / M_DEUTERIUM
-            Te_eV = (
-                (2.0 / 3.0)
-                * np.maximum(state[EE].astype(np.float64), config.electron_energy_floor)
-                / np.maximum(ne_sp * K_B, 1e-30)
-                * K_B / 1.602176634e-19
-            )
+            Te_eV = _electron_temperature_eV(state, ne_sp, config)
             eta_local = spitzer_resistivity(
                 Te_eV, Z=config.spitzer_Z, lnA=config.spitzer_lnA,
                 eta_floor=config.spitzer_eta_floor, eta_cap=config.spitzer_eta_cap,
@@ -781,12 +792,7 @@ def implicit_resistive_diffusion(
         s = _ensure_state_shape(state).astype(np.float64)
         rho = np.maximum(s[RHO], config.density_floor)
         ne = rho / M_DEUTERIUM
-        Te_eV = (
-            (2.0 / 3.0)
-            * np.maximum(s[EE], config.electron_energy_floor)
-            / np.maximum(ne * K_B, 1e-30)
-            * K_B / 1.602176634e-19
-        )
+        Te_eV = _electron_temperature_eV(s, ne, config)
         eta_mean = float(np.mean(spitzer_resistivity(
             Te_eV, Z=config.spitzer_Z, lnA=config.spitzer_lnA,
             eta_floor=config.spitzer_eta_floor, eta_cap=config.spitzer_eta_cap,

@@ -134,9 +134,10 @@ def test_spitzer_resistivity_temperature_scaling():
     eta_low = mhd.spitzer_resistivity(Te_low)
     eta_high = mhd.spitzer_resistivity(Te_high)
     assert eta_low[0] > eta_high[0]
-    # Check scaling: ratio should be roughly (100/1)^1.5 = 1000
+    # Exact ratio is (100/1)^1.5 = 1000; tolerance accounts for the
+    # floor clamp at Te=0.1 eV having no effect on these inputs.
     ratio = eta_low[0] / eta_high[0]
-    assert 500.0 < ratio < 2000.0
+    assert 900.0 < ratio < 1100.0
 
 
 def test_spitzer_resistivity_clipping():
