@@ -517,7 +517,8 @@ def ghost_pad(
     grid = (nr + 2 * ng, nz, 10)
     # mx.fast.metal_kernel expects inputs as a list and the output as a separate
     # argument; constants are provided as Python floats to match Metal signatures.
-    kernel([state], out, constants=[nr, nz, ng, dr, r_min, float(current_I)], grid=grid)
+    constants = [nr, nz, ng, dr, r_min, float(current_I)]  # buffer(2)=nr, (3)=nz, (4)=ng, (5)=dr, (6)=r_min, (7)=I
+    kernel([state], out, constants=constants, grid=grid)
     return out
 
 
@@ -869,7 +870,8 @@ def recommended_thread_group(nr: int, nz: int) -> Tuple[int, int, int]:
         third entry is fixed at 4 for the ghost-padding kernel's 3-D grid,
         while the first two entries are clamped to the provided sizes. For
         2-D kernels (HLLD flux or geometric sources) use only ``tg_r`` and
-        ``tg_z``.
+        ``tg_z``. These values are tuned for M3 Pro; other GPUs may benefit
+        from re-tuning.
     """
     # Favor ~256 threads per group while keeping 3D occupancy reasonable.
     tg_r = 16 if nr >= 16 else max(1, nr)
