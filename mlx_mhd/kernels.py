@@ -38,7 +38,7 @@ GHOST_PAD_MSL = r"""
 #include <metal_stdlib>
 using namespace metal;
 
-constant float MU0 = 4.0f * 3.14159265358979323846e-7f;
+constant float MU0 = 4.0f * M_PI_F * 1e-7f;
 constant uint COMP_RHO = 0;
 constant uint COMP_VR = 1;
 constant uint COMP_VZ = 2;
@@ -755,7 +755,7 @@ def cylindrical_sources(
 def recommended_thread_group(nr: int, nz: int) -> Tuple[int, int, int]:
     """Return a good default threadgroup size for M3 Pro (14-core GPU)."""
     # Favor ~256 threads per group while keeping 3D occupancy reasonable.
-    tg_r = 16
-    tg_z = 4
+    tg_r = 16 if nr >= 16 else max(1, nr)
+    tg_z = 8 if nz >= 8 else max(1, nz)
     tg_comp = 4
     return tg_r, tg_z, tg_comp
