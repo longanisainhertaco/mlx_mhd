@@ -59,11 +59,13 @@ def _exact_sod_solution(x: np.ndarray, t: float, x0: float = 0.5) -> np.ndarray:
     S_tail = v_star - c_star_L
 
     xi = (x - x0) / t
+    # Clamp the rarefaction argument to avoid fractional-power-of-negative warnings
+    fan_arg = np.maximum(2.0 / gp1 + gm1 / (gp1 * cL) * (vL - xi), 0.0)
     rho = np.where(
         xi < S_head, rhoL,
         np.where(
             xi < S_tail,
-            rhoL * (2.0 / gp1 + gm1 / (gp1 * cL) * (vL - xi)) ** (2.0 / gm1),
+            rhoL * fan_arg ** (2.0 / gm1),
             np.where(
                 xi < v_star, rho_star_L,
                 np.where(xi < S_shock, rho_star_R, rhoR),
