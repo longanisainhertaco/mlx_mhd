@@ -10,7 +10,7 @@ import numpy as np
 
 try:
     import mlx.core as mx
-except Exception:  # pragma: no cover - MLX is only available on Apple Silicon
+except ImportError:  # pragma: no cover - MLX is only available on Apple Silicon
     mx = None
 
 # Physical constants
@@ -431,24 +431,42 @@ def _require_mx() -> None:
         )
 
 
-def _to_mx_float32(arr: "mx.array") -> "mx.array":
+def _ensure_mx_float32(arr: "mx.array") -> "mx.array":
     return mx.array(arr, dtype=mx.float32)
 
 
 def build_ghost_padding_kernel():
-    """Return compiled ghost padding Metal kernel."""
+    """Return compiled ghost padding Metal kernel.
+
+    Returns
+    -------
+    Callable
+        A Metal kernel callable returned by ``mx.fast.metal_kernel``.
+    """
     _require_mx()
     return mx.fast.metal_kernel(GHOST_PAD_MSL, "ghost_pad")
 
 
 def build_hlld_kernel():
-    """Return compiled HLLD Metal kernel."""
+    """Return compiled HLLD Metal kernel.
+
+    Returns
+    -------
+    Callable
+        A Metal kernel callable returned by ``mx.fast.metal_kernel``.
+    """
     _require_mx()
     return mx.fast.metal_kernel(HLLD_MSL, "hlld_flux")
 
 
 def build_geometric_source_kernel():
-    """Return compiled geometric source Metal kernel."""
+    """Return compiled geometric source Metal kernel.
+
+    Returns
+    -------
+    Callable
+        A Metal kernel callable returned by ``mx.fast.metal_kernel``.
+    """
     _require_mx()
     return mx.fast.metal_kernel(GEOMETRIC_SOURCES_MSL, "geometric_sources")
 
@@ -477,13 +495,14 @@ def ghost_pad(
     """
 
     _require_mx()
-    state = _to_mx_float32(state)
+    state = _ensure_mx_float32(state)
     nr, nz = int(state.shape[1]), int(state.shape[2])
     r_min = dr * 0.5 if r_min is None else r_min
     out = mx.empty((10, nr + 2 * ng, nz), dtype=state.dtype, device=state.device)
     kernel = build_ghost_padding_kernel()
     grid = (nr + 2 * ng, nz, 10)
-    # mx.fast.metal_kernel expects inputs as a list and the output as a separate argument.
+    # mx.fast.metal_kernel expects inputs as a list and the output as a separate
+    # argument; constants are provided as Python floats to match Metal signatures.
     kernel([state], out, constants=[nr, nz, ng, dr, r_min, float(current_I)], grid=grid)
     return out
 
@@ -659,10 +678,22 @@ def hlld_flux_numpy(
 def hlld_flux(
     left: "mx.array", right: "mx.array"
 ) -> "mx.array":
-    """Compute fluxes using the Metal HLLD kernel."""
+    """Compute fluxes using the Metal HLLD kernel.
+
+    Parameters
+    ----------
+    left, right : mx.array
+        Primitive left/right interface states shaped (10, nr, nz) with the
+        component ordering specified in :data:`COMPONENTS`.
+
+    Returns
+    -------
+    mx.array
+        Flux array with shape (10, nr, nz).
+    """
     _require_mx()
-    left = _to_mx_float32(left)
-    right = _to_mx_float32(right)
+    left = _ensure_mx_float32(left)
+    right = _ensure_mx_float32(right)
     nr, nz = int(left.shape[1]), int(left.shape[2])
     out = mx.empty((10, nr, nz), dtype=mx.float32, device=left.device)
     kernel = build_hlld_kernel()
@@ -750,10 +781,23 @@ def cylindrical_sources_numpy(prim: np.ndarray, radii: np.ndarray) -> np.ndarray
 def cylindrical_sources(
     prim: "mx.array", radii: "mx.array"
 ) -> "mx.array":
-    """Compute cylindrical geometric source terms."""
+    """Compute cylindrical geometric source terms.
+
+    Parameters
+    ----------
+    prim : mx.array
+        Primitive variables shaped (10, nr, nz) in :data:`COMPONENTS` order.
+    radii : mx.array
+        Radial cell-center coordinates (nr,) in meters.
+
+    Returns
+    -------
+    mx.array
+        Source term array with the same shape as ``prim``.
+    """
     _require_mx()
-    prim = _to_mx_float32(prim)
-    radii = _to_mx_float32(radii)
+    prim = _ensure_mx_float32(prim)
+    radii = _ensure_mx_float32(radii)
     nr, nz = int(prim.shape[1]), int(prim.shape[2])
     out = mx.zeros_like(prim)
     kernel = build_geometric_source_kernel()
