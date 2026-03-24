@@ -39,6 +39,7 @@ GHOST_PAD_MSL = r"""
 using namespace metal;
 
 constant float MU0 = 4.0f * M_PI_F * 1e-7f;
+constant float EPS = 1e-6f;
 constant uint COMP_RHO = 0;
 constant uint COMP_VR = 1;
 constant uint COMP_VZ = 2;
@@ -99,7 +100,7 @@ kernel void ghost_pad(
             val = 0.0f;
         } else if (comp == COMP_BTH) {
             float r = r_min + (float(r_in) + 0.5f) * dr;
-            float denom = max(r, 1e-6f);
+            float denom = max(r, EPS);
             val = (MU0 * current_I) / (2.0f * M_PI_F * denom);
         } else {
             val = src_val;
@@ -136,6 +137,7 @@ HLLD_MSL = r"""
 using namespace metal;
 
 constant float GAMMA = 5.0f / 3.0f;
+constant float EPS = 1e-6f;
 constant uint COMP_RHO = 0;
 constant uint COMP_VR = 1;
 constant uint COMP_VZ = 2;
@@ -252,13 +254,13 @@ kernel void hlld_flux(
     float ptR = R.p + 0.5f * (R.br * R.br + R.bz * R.bz + R.bt * R.bt);
     float SM_num = (SR - R.vr) * R.rho * R.vr - (SL - L.vr) * L.rho * L.vr + ptL - ptR;
     float SM_den = (SR - R.vr) * R.rho - (SL - L.vr) * L.rho;
-    if (fabs(SM_den) < 1e-6f) SM_den = (SM_den >= 0.0f ? 1e-6f : -1e-6f);
+    if (fabs(SM_den) < EPS) SM_den = (SM_den >= 0.0f ? EPS : -EPS);
     float SM = SM_num / SM_den;
 
     float denomL = SL - SM;
     float denomR = SR - SM;
-    denomL = (fabs(denomL) < 1e-6f) ? (denomL >= 0.0f ? 1e-6f : -1e-6f) : denomL;
-    denomR = (fabs(denomR) < 1e-6f) ? (denomR >= 0.0f ? 1e-6f : -1e-6f) : denomR;
+    denomL = (fabs(denomL) < EPS) ? (denomL >= 0.0f ? EPS : -EPS) : denomL;
+    denomR = (fabs(denomR) < EPS) ? (denomR >= 0.0f ? EPS : -EPS) : denomR;
 
     float rhoL_star = L.rho * (SL - L.vr) / denomL;
     float rhoR_star = R.rho * (SR - R.vr) / denomR;
@@ -429,7 +431,7 @@ def _require_mx() -> None:
         )
 
 
-def _as_mx(arr: "mx.array") -> "mx.array":
+def _to_mx_float32(arr: "mx.array") -> "mx.array":
     return mx.array(arr, dtype=mx.float32)
 
 
@@ -475,7 +477,7 @@ def ghost_pad(
     """
 
     _require_mx()
-    state = _as_mx(state).astype(mx.float32)
+    state = _to_mx_float32(state)
     nr, nz = int(state.shape[1]), int(state.shape[2])
     r_min = dr * 0.5 if r_min is None else r_min
     out = mx.empty((10, nr + 2 * ng, nz), dtype=state.dtype, device=state.device)
@@ -658,8 +660,8 @@ def hlld_flux(
 ) -> "mx.array":
     """Compute fluxes using the Metal HLLD kernel."""
     _require_mx()
-    left = _as_mx(left).astype(mx.float32)
-    right = _as_mx(right).astype(mx.float32)
+    left = _to_mx_float32(left)
+    right = _to_mx_float32(right)
     nr, nz = int(left.shape[1]), int(left.shape[2])
     out = mx.empty((10, nr, nz), dtype=mx.float32, device=left.device)
     kernel = build_hlld_kernel()
@@ -743,8 +745,8 @@ def cylindrical_sources(
 ) -> "mx.array":
     """Compute cylindrical geometric source terms."""
     _require_mx()
-    prim = _as_mx(prim).astype(mx.float32)
-    radii = _as_mx(radii).astype(mx.float32)
+    prim = _to_mx_float32(prim)
+    radii = _to_mx_float32(radii)
     nr, nz = int(prim.shape[1]), int(prim.shape[2])
     out = mx.zeros_like(prim)
     kernel = build_geometric_source_kernel()
@@ -753,7 +755,20 @@ def cylindrical_sources(
 
 
 def recommended_thread_group(nr: int, nz: int) -> Tuple[int, int, int]:
-    """Return a good default threadgroup size for M3 Pro (14-core GPU)."""
+    """Return a good default threadgroup size for M3 Pro (14-core GPU).
+
+    Parameters
+    ----------
+    nr, nz : int
+        Problem dimensions along radial and axial directions. The values are
+        used to clamp the suggested sizes so they never exceed the grid.
+
+    Returns
+    -------
+    (tg_r, tg_z, tg_comp) : tuple[int, int, int]
+        Threadgroup extents for radial, axial, and component dimensions. The
+        third entry is useful for the ghost-padding kernel's 3-D grid.
+    """
     # Favor ~256 threads per group while keeping 3D occupancy reasonable.
     tg_r = 16 if nr >= 16 else max(1, nr)
     tg_z = 8 if nz >= 8 else max(1, nz)
