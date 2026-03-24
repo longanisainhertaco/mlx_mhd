@@ -106,7 +106,7 @@ def test_validation_sod_shock_tube_l1_density():
     mid = nz // 2
     prim[C["rho"], :, mid:] = 0.125
     prim[C["p"], :, mid:] = 0.1
-    prim[C["Srho"], :, mid:] = 0.1 / 0.125 ** GAMMA
+    prim[C["Srho"], :, mid:] = 0.1 / 0.125 ** GAMMA  # specific entropy
     prim[C["Ee"], :, mid:] = 0.5 * 0.1 / (GAMMA - 1.0)
 
     state = mhd.primitive_to_conserved(prim)
@@ -142,7 +142,7 @@ def test_validation_brio_wu_no_nan_and_compound_waves():
     mid = nz // 2
     prim[C["rho"], :, mid:] = 0.5
     prim[C["p"], :, mid:] = 0.3
-    prim[C["Srho"], :, mid:] = 0.3 / 0.5 ** GAMMA
+    prim[C["Srho"], :, mid:] = 0.3 / 0.5 ** GAMMA  # specific entropy
     prim[C["Ee"], :, mid:] = 0.5 * 0.3 / (GAMMA - 1.0)
     prim[C["Br"], :, mid:] = -0.5  # B reversal across interface
 
@@ -225,9 +225,9 @@ def test_validation_low_beta_rankine_hugoniot():
         state, _ = solver.step(state, dt)
 
     pz_total = float(np.sum(state[C["rho_vz"]] * vol))
-    rel_asym = abs(pz_total) / max(pz_half, 1e-30)
-    assert rel_asym < 0.05, (
-        f"R-H momentum asymmetry {rel_asym:.3f}, expected < 0.05"
+    momentum_asymmetry = abs(pz_total) / max(pz_half, 1e-30)
+    assert momentum_asymmetry < 0.05, (
+        f"R-H momentum asymmetry {momentum_asymmetry:.3f}, expected < 0.05"
     )
 
 
@@ -285,14 +285,14 @@ def test_validation_mass_conservation():
     state = mhd.primitive_to_conserved(prim)
 
     vol = grid.cell_volumes  # (nr, nz)
-    mass_0 = float(np.sum(state[C["rho"]] * vol))
+    initial_mass = float(np.sum(state[C["rho"]] * vol))
 
     for _ in range(30):
         dt = solver.courant_timestep(state)
         state, _ = solver.step(state, dt)
 
-    mass_f = float(np.sum(state[C["rho"]] * vol))
-    rel_err = abs(mass_f - mass_0) / max(abs(mass_0), 1e-30)
+    final_mass = float(np.sum(state[C["rho"]] * vol))
+    rel_err = abs(final_mass - initial_mass) / max(abs(initial_mass), 1e-30)
     assert rel_err < 0.05, f"Mass conservation error {rel_err:.4f}, expected < 5 %"
 
 
@@ -312,14 +312,14 @@ def test_validation_energy_conservation():
     state = mhd.primitive_to_conserved(prim)
 
     vol = grid.cell_volumes
-    energy_0 = float(np.sum(state[C["E"]] * vol))
+    initial_energy = float(np.sum(state[C["E"]] * vol))
 
     for _ in range(30):
         dt = solver.courant_timestep(state)
         state, _ = solver.step(state, dt)
 
-    energy_f = float(np.sum(state[C["E"]] * vol))
-    rel_err = abs(energy_f - energy_0) / max(abs(energy_0), 1e-30)
+    final_energy = float(np.sum(state[C["E"]] * vol))
+    rel_err = abs(final_energy - initial_energy) / max(abs(initial_energy), 1e-30)
     assert rel_err < 0.10, (
         f"Energy conservation error {rel_err:.4f}, expected < 10 %"
     )
