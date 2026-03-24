@@ -804,7 +804,7 @@ def ghost_pad_numpy(
     if _reference_ghost_pad_numpy is not None and (
         r_min is None or np.isclose(r_min, 0.5 * dr)
     ):
-        return _reference_ghost_pad_numpy(state, current_I, dr, ng)
+        return _reference_ghost_pad_numpy(state, I=current_I, dr=dr, ng=ng)
 
     comps, nr, nz = state.shape
     assert comps == 10
